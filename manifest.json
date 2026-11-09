@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "YouTube Real-Time Semantic & Multimodal Verifier",
   "version": "3.2.0",
-  "description": "On-device video authenticity, scene relevance, and clickbait verification powered by Gemini Nano and WebGPU.",
+  "description": "On-device preview-scene assessment. Does not verify factual claims or publisher identity.",
   "permissions": ["activeTab"],
   "host_permissions": [
     "*://*.youtube.com/*",

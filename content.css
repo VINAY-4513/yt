@@ -35,21 +35,7 @@
   color: #f8fafc !important;
 }
 
-/* Verified Authentic State (Green) */
-.yt-hover-dashboard.real {
-  background: rgba(6, 78, 59, 0.96) !important;
-  border: 1px solid #22c55e !important;
-  color: #f0fdf4 !important;
-}
-
-/* Clickbait / Deceptive Content State (Red) */
-.yt-hover-dashboard.fake {
-  background: rgba(127, 29, 29, 0.96) !important;
-  border: 1px solid #ef4444 !important;
-  color: #fef2f2 !important;
-}
-
-/* Inconclusive Evidence State (Amber) */
+/* Unverified content state (Amber) */
 .yt-hover-dashboard.uncertain {
   background: rgba(120, 53, 15, 0.96) !important;
   border: 1px solid #f59e0b !important;
@@ -74,15 +60,15 @@
   font-size: 11px !important;
 }
 
-/* Strict Two-Line Rationale Display */
+/* Compact rationale display */
 .yt-hover-subtitle {
   font-size: 11px !important;
   font-weight: 400 !important;
   line-height: 1.4 !important;
   opacity: 0.96 !important;
   display: -webkit-box !important;
-  -webkit-line-clamp: 2 !important;
-  line-clamp: 2 !important;
+  -webkit-line-clamp: 4 !important;
+  line-clamp: 4 !important;
   -webkit-box-orient: vertical !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
