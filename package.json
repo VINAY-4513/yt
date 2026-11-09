@@ -1,0 +1,11 @@
+{
+  "name": "yt-semantic-verifier-fact-check-backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node --env-file=.env server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

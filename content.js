@@ -6,11 +6,15 @@
   "use strict";
 
   let baseSession = null;
+  let baseSessionPromise = null;
   const verdictCache = new Map();
   let currentCard = null;
+  let pendingCard = null;
   let hoverTimer = null;
   let activeAbortController = null;
   let isPromptExecuting = false;
+  const MAX_VERDICT_CACHE_ENTRIES = 100;
+  const VERDICT_CACHE_TTL_MS = 10 * 60 * 1000;
 
   const CARD_SELECTORS = [
     "ytd-rich-item-renderer",
@@ -25,8 +29,8 @@
   ].join(", ");
 
   const SYSTEM_PROMPT =
-    "Assess only whether the supplied preview frame visibly matches the video title. " +
-    "A single preview frame cannot establish the truth of factual claims, the identity of a publisher, " +
+    "Assess only whether the supplied preview frames visibly match the video title. " +
+    "A few preview frames cannot establish the truth of factual claims, the identity of a publisher, " +
     "whether a whole video is authentic, or whether a video is deceptive. Never infer those conclusions. " +
     "If the frame does not provide enough evidence, use UNCERTAIN.\n\n" +
     "Return exactly these fields:\n" +
@@ -104,39 +108,29 @@
     }, 280);
   }
 
-  async function getBaseSession() {
-    if (baseSession) return baseSession;
+  function getBaseSession() {
+    if (baseSession) return Promise.resolve(baseSession);
+    if (baseSessionPromise) return baseSessionPromise;
     const lm = window.LanguageModel || window.ai?.languageModel;
-    if (!lm) return null;
+    if (!lm) return Promise.resolve(null);
 
-    try {
-      baseSession = await lm.create({
-        expectedInputs: [{ type: "image" }],
-        outputLanguage: "en",
-        systemPrompt: SYSTEM_PROMPT
-      });
-      return baseSession;
-    } catch (_) {
-      try {
-        baseSession = await lm.create({
-          outputLanguage: "en",
-          systemPrompt: SYSTEM_PROMPT
-        });
-        return baseSession;
-      } catch (__) {
+    baseSessionPromise = lm.create({
+      expectedInputs: [{ type: "image" }],
+      outputLanguage: "en",
+      systemPrompt: SYSTEM_PROMPT
+    })
+      .then((session) => {
+        baseSession = session;
+        return session;
+      })
+      .catch((error) => {
+        console.error("Could not initialize the image-capable on-device model:", error);
         return null;
-      }
-    }
-  }
-
-  function cleanTitle(raw) {
-    return raw
-      .replace(/#\w+/g, "")
-      .replace(/\[.*?\]|\(.*?\)/g, "")
-      .replace(/\b(8K|4K|1080p|HD|UHD|Official|Full\s*HD)\b/gi, "")
-      .replace(/\s*\|\s*/g, " - ")
-      .replace(/\s{2,}/g, " ")
-      .trim();
+      })
+      .finally(() => {
+        baseSessionPromise = null;
+      });
+    return baseSessionPromise;
   }
 
   function extractVideoKey(card, rawTitle) {
@@ -175,32 +169,131 @@
 
     const channelName = channelEl ? channelEl.textContent.trim() : "";
 
+    const descriptionEl =
+      card.querySelector("#description-text") ||
+      card.querySelector(".metadata-snippet-container") ||
+      card.querySelector(".metadata-snippet-text");
+    const snippetDesc = descriptionEl ? descriptionEl.textContent.trim().slice(0, 1000) : "";
+
     const videoKey = extractVideoKey(card, rawTitle);
 
     return {
       rawTitle,
       channelName,
+      snippetDesc,
       videoKey,
       isShort
     };
   }
 
-  async function analyzeVideoVisual(card, isShort) {
+  function getVerdictCacheKey(meta) {
+    return `${meta.videoKey}\n${meta.rawTitle}\n${meta.channelName}\n${meta.snippetDesc}`;
+  }
+
+  function getCachedVerdict(key) {
+    const entry = verdictCache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.createdAt > VERDICT_CACHE_TTL_MS) {
+      verdictCache.delete(key);
+      return null;
+    }
+    verdictCache.delete(key);
+    verdictCache.set(key, entry);
+    return entry.result;
+  }
+
+  function cacheVerdict(key, result) {
+    verdictCache.delete(key);
+    verdictCache.set(key, { result, createdAt: Date.now() });
+    while (verdictCache.size > MAX_VERDICT_CACHE_ENTRIES) {
+      verdictCache.delete(verdictCache.keys().next().value);
+    }
+  }
+
+  function searchRelatedFactChecks(query) {
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      return Promise.resolve({ ok: false, error: "Extension messaging is unavailable." });
+    }
+
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "fact-check-search", query }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error("Could not contact local fact-check backend:", chrome.runtime.lastError);
+          resolve({ ok: false, error: "Local fact-check backend is unavailable." });
+          return;
+        }
+        if (!response?.ok) {
+          resolve({
+            ok: false,
+            error: String(response?.error || "Fact-check search failed.").slice(0, 120)
+          });
+          return;
+        }
+        resolve({
+          ok: true,
+          matches: Array.isArray(response.matches) ? response.matches.slice(0, 5) : []
+        });
+      });
+    });
+  }
+
+  function factCheckSummary(result) {
+    if (!result.ok) return `Fact-check search unavailable: ${result.error}`;
+    if (result.matches.length === 0) {
+      return "Fact-check search: no related references found; absence is not evidence.";
+    }
+    return `Fact-check search: ${result.matches.length} related reference(s); this is not a verdict.`;
+  }
+
+  function waitForPreviewFrame(signal, delayMs) {
+    return new Promise((resolve) => {
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
+      const finish = () => {
+        clearTimeout(timeout);
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const timeout = setTimeout(finish, delayMs);
+      signal.addEventListener("abort", finish, { once: true });
+    });
+  }
+
+  async function analyzeVideoVisual(card, isShort, signal) {
     const W = isShort ? 45 : 80;
     const H = isShort ? 80 : 45;
     const video = card.querySelector("video");
 
     if (video && video.videoWidth > 0 && !video.paused) {
       try {
-        const canvas1 = document.createElement("canvas");
-        canvas1.width = W;
-        canvas1.height = H;
-        const ctx1 = canvas1.getContext("2d", { willReadFrequently: true });
-        ctx1.drawImage(video, 0, 0, W, H);
-        const bitmap = await createImageBitmap(canvas1);
-        return { bitmap };
-      } catch (_) {}
+        const frameCount = 3;
+        const canvas = document.createElement("canvas");
+        canvas.width = W * frameCount;
+        canvas.height = H;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) throw new Error("Could not create preview-frame canvas context.");
+
+        for (let frame = 0; frame < frameCount; frame += 1) {
+          if (signal.aborted) return { bitmap: null, sampledFrames: 0 };
+          if (frame > 0) {
+            await waitForPreviewFrame(signal, 250);
+          }
+          if (signal.aborted || video.paused || video.videoWidth === 0) {
+            return { bitmap: null, sampledFrames: 0 };
+          }
+          ctx.drawImage(video, frame * W, 0, W, H);
+        }
+
+        const bitmap = await createImageBitmap(canvas);
+        return { bitmap, sampledFrames: frameCount };
+      } catch (error) {
+        if (!signal.aborted) console.error("Could not sample preview video frames:", error);
+      }
     }
+
+    if (signal.aborted) return { bitmap: null, sampledFrames: 0 };
 
     const thumbArea =
       card.querySelector("ytd-thumbnail, #thumbnail, a#thumbnail") ||
@@ -214,13 +307,16 @@
         canvas.width = W;
         canvas.height = H;
         const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Could not create thumbnail canvas context.");
         ctx.drawImage(img, 0, 0, W, H);
         const bitmap = await createImageBitmap(canvas);
-        return { bitmap };
-      } catch (_) {}
+        return { bitmap, sampledFrames: 1 };
+      } catch (error) {
+        console.error("Could not capture preview thumbnail:", error);
+      }
     }
 
-    return { bitmap: null };
+    return { bitmap: null, sampledFrames: 0 };
   }
 
   function getMountContainer(card) {
@@ -233,7 +329,7 @@
     );
   }
 
-  function showDashboard(card, status, titleMsg, subtitleMsg, isShort) {
+  function showDashboard(card, status, titleMsg, subtitleMsg, isShort, sources = []) {
     const mountArea = getMountContainer(card);
     if (!mountArea) return;
 
@@ -259,13 +355,33 @@
     const subEl = document.createElement("div");
     subEl.className = "yt-hover-subtitle";
     const lines = subtitleMsg.split("\n").filter((l) => l.trim().length > 0);
-    lines.slice(0, 4).forEach((line, index) => {
+    lines.slice(0, 5).forEach((line, index) => {
       if (index > 0) subEl.appendChild(document.createElement("br"));
       subEl.appendChild(document.createTextNode(line));
     });
 
     dash.appendChild(titleEl);
     dash.appendChild(subEl);
+
+    if (sources.length > 0) {
+      const sourceList = document.createElement("div");
+      sourceList.className = "yt-hover-sources";
+      sources.forEach((source) => {
+        try {
+          const url = new URL(source.url);
+          if (url.protocol !== "https:") return;
+          const link = document.createElement("a");
+          link.href = url.href;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = `${source.publisher || "Fact-check"}: ${source.title || source.claimText || "Review"}${source.rating ? ` — ${source.rating}` : ""}`;
+          sourceList.appendChild(link);
+        } catch (error) {
+          console.error("Ignoring invalid fact-check reference URL:", error);
+        }
+      });
+      if (sourceList.childElementCount > 0) dash.appendChild(sourceList);
+    }
 
     if (status === "FAKE" || status === "UNCERTAIN") {
       const actionsEl = document.createElement("div");
@@ -312,26 +428,26 @@
   }
 
   async function processHover(card) {
+    if (card !== currentCard || !card.isConnected) return;
     if (card.dataset.dismissWarning === "true" || card.dataset.skipped === "true") return;
 
     const meta = extractCardMetadata(card);
     if (!meta.rawTitle) return;
 
-    if (verdictCache.has(meta.videoKey)) {
-      const cached = verdictCache.get(meta.videoKey);
-      showDashboard(card, cached.status, cached.title, cached.subtitle, meta.isShort);
+    const cacheKey = getVerdictCacheKey(meta);
+    const cached = getCachedVerdict(cacheKey);
+    if (cached) {
+      showDashboard(card, cached.status, cached.title, cached.subtitle, meta.isShort, cached.sources);
       return;
     }
 
     if (isPromptExecuting) {
+      pendingCard = card;
       showDashboard(
         card,
-        "uncertain",
-        "⚠️ NOT FACT-CHECKED",
-        `Source identity: not authenticated (${meta.channelName || "unknown channel"})\n` +
-          "Factual claims: not checked against external sources.\n" +
-          "Title/frame match: unavailable (analysis is busy).\n" +
-          "No conclusion about whether this video is true or false.",
+        "loading",
+        "⏳ Analysis queued",
+        "This does not fact-check video claims.",
         meta.isShort
       );
       return;
@@ -339,54 +455,53 @@
 
     showDashboard(card, "loading", "⚡ Checking preview scene...", "This does not fact-check video claims.", meta.isShort);
 
-    if (activeAbortController) {
-      activeAbortController.abort();
-    }
     const currentAbort = new AbortController();
     activeAbortController = currentAbort;
+    isPromptExecuting = true;
 
     let bitmap = null;
     try {
-      const preview = await analyzeVideoVisual(card, meta.isShort);
+      const sourceLine = `Source identity: not authenticated (${meta.channelName || "unknown channel"})`;
+      const factsLine = "Factual claims: not verified; title search is contextual only.";
+      const factCheckPromise = searchRelatedFactChecks(meta.rawTitle);
+      const preview = await analyzeVideoVisual(card, meta.isShort, currentAbort.signal);
       bitmap = preview.bitmap;
       if (currentAbort.signal.aborted) return;
 
-      const sourceLine = `Source identity: not authenticated (${meta.channelName || "unknown channel"})`;
-      const factsLine = "Factual claims: not checked against external sources.";
       if (!bitmap) {
-        const resultData = {
-          status: "UNCERTAIN",
-          title: "⚠️ NOT FACT-CHECKED",
-          subtitle:
-            `${sourceLine}\n${factsLine}\n` +
-            "Title/frame match: unavailable (no preview image).\n" +
-            "No conclusion about whether this video is true or false."
-        };
-        verdictCache.set(meta.videoKey, resultData);
-        showDashboard(card, resultData.status, resultData.title, resultData.subtitle, meta.isShort);
+        const factChecks = await factCheckPromise;
+        showDashboard(
+          card,
+          "uncertain",
+          "⚠️ NOT FACT-CHECKED",
+          `${sourceLine}\n${factsLine}\n` +
+            `Title/frame match: unavailable (no preview image).\n${factCheckSummary(factChecks)}`,
+          meta.isShort,
+          factChecks.ok ? factChecks.matches.slice(0, 2) : []
+        );
         return;
       }
 
       const base = await getBaseSession();
       if (!base) {
-        const resultData = {
-          status: "UNCERTAIN",
-          title: "⚠️ NOT FACT-CHECKED",
-          subtitle:
-            `${sourceLine}\n${factsLine}\n` +
-            "Title/frame match: unavailable (on-device model unavailable).\n" +
-            "No conclusion about whether this video is true or false."
-        };
-        verdictCache.set(meta.videoKey, resultData);
-        showDashboard(card, resultData.status, resultData.title, resultData.subtitle, meta.isShort);
+        const factChecks = await factCheckPromise;
+        showDashboard(
+          card,
+          "uncertain",
+          "⚠️ NOT FACT-CHECKED",
+          `${sourceLine}\n${factsLine}\n` +
+            `Title/frame match: unavailable (on-device model unavailable).\n${factCheckSummary(factChecks)}`,
+          meta.isShort,
+          factChecks.ok ? factChecks.matches.slice(0, 2) : []
+        );
         return;
       }
 
-      isPromptExecuting = true;
-      const cleaned = cleanTitle(meta.rawTitle);
       const promptText =
-        `TITLE: "${cleaned}"\n` +
-        "TASK: Assess only whether this single image visibly matches the title. Do not assess factual truth or source identity.\n" +
+        `TITLE: ${JSON.stringify(meta.rawTitle)}\n` +
+        (meta.snippetDesc ? `VISIBLE DESCRIPTION CONTEXT: ${JSON.stringify(meta.snippetDesc)}\n` : "") +
+        `The image is a contact sheet of ${preview.sampledFrames} ${preview.sampledFrames === 1 ? "preview frame" : "preview frames"}.\n` +
+        "Assess only whether these sampled images visibly match the title in context. Do not assess factual truth, source identity, or the whole video.\n" +
         "OUTPUT:\nSCENE: MATCH, MISMATCH, or UNCERTAIN\nREASON: concise visible evidence";
       let fullText = "";
       const multiStream = base.promptStreaming(
@@ -398,6 +513,8 @@
         fullText += chunk;
       }
 
+      if (currentAbort.signal.aborted) return;
+      const factChecks = await factCheckPromise;
       if (currentAbort.signal.aborted) return;
 
       const sceneMatch = fullText.match(/^\s*SCENE:\s*(MISMATCH|MATCH|UNCERTAIN)\s*$/im);
@@ -411,12 +528,13 @@
         title: "⚠️ NOT FACT-CHECKED",
         subtitle:
           `${sourceLine}\n${factsLine}\n` +
-          `Title/frame match: ${sceneStatus.toLowerCase()} (one preview frame only).\n` +
-          reason
+          `Title/frame match: ${sceneStatus.toLowerCase()} (${preview.sampledFrames} sampled ${preview.sampledFrames === 1 ? "frame" : "frames"}; not full-video verification).\n` +
+          `${factCheckSummary(factChecks)}\n${reason}`,
+        sources: factChecks.ok ? factChecks.matches.slice(0, 2) : []
       };
 
-      verdictCache.set(meta.videoKey, resultData);
-      showDashboard(card, resultData.status, resultData.title, resultData.subtitle, meta.isShort);
+      if (sceneMatch) cacheVerdict(cacheKey, resultData);
+      showDashboard(card, resultData.status, resultData.title, resultData.subtitle, meta.isShort, resultData.sources);
     } catch (error) {
       if (!currentAbort.signal.aborted) {
         console.error("YouTube preview scene assessment failed:", error);
@@ -433,12 +551,22 @@
       }
     } finally {
       isPromptExecuting = false;
+      if (activeAbortController === currentAbort) activeAbortController = null;
       if (bitmap && typeof bitmap.close === "function") {
         try {
           bitmap.close();
         } catch (error) {
           console.error("Could not release preview image bitmap:", error);
         }
+      }
+      const nextCard = pendingCard;
+      pendingCard = null;
+      if (nextCard && nextCard.isConnected && nextCard === currentCard) {
+        setTimeout(() => {
+          processHover(nextCard).catch((error) => {
+            console.error("Queued YouTube preview assessment could not be completed:", error);
+          });
+        }, 0);
       }
     }
   }
@@ -451,7 +579,7 @@
       } catch (_) {}
       activeAbortController = null;
     }
-    isPromptExecuting = false;
+    pendingCard = null;
     document.querySelectorAll(".yt-hover-dashboard").forEach((d) => d.remove());
     currentCard = null;
   }
@@ -481,7 +609,8 @@
   document.addEventListener(
     "pointerout",
     (e) => {
-      if (!currentCard) return;
+      const card = e.target.closest(CARD_SELECTORS);
+      if (!currentCard || card !== currentCard) return;
       const related = e.relatedTarget;
       if (related && isTargetInsideCardContext(related, currentCard)) {
         return;
@@ -494,6 +623,7 @@
         } catch (_) {}
         activeAbortController = null;
       }
+      if (pendingCard === currentCard) pendingCard = null;
       hideDashboard(currentCard);
       currentCard = null;
     },
