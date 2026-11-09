@@ -1,0 +1,150 @@
+/* Glassmorphism Pre-Click Verification Overlay */
+.yt-hover-dashboard {
+  position: absolute !important;
+  top: 8px !important;
+  left: 8px !important;
+  right: 8px !important;
+  z-index: 2147483647 !important;
+  padding: 10px 14px !important;
+  border-radius: 8px !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.85) !important;
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+  pointer-events: auto !important;
+  transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  box-sizing: border-box !important;
+  max-width: calc(100% - 16px) !important;
+  overflow: hidden !important;
+  user-select: none !important;
+}
+
+/* Vertical Form Factor for YouTube Shorts */
+.yt-hover-dashboard.short-format {
+  top: 10px !important;
+  left: 6px !important;
+  right: 6px !important;
+  padding: 8px 10px !important;
+  max-width: calc(100% - 12px) !important;
+}
+
+/* Loading Inspection State */
+.yt-hover-dashboard.loading {
+  background: rgba(15, 23, 42, 0.94) !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  color: #f8fafc !important;
+}
+
+/* Verified Authentic State (Green) */
+.yt-hover-dashboard.real {
+  background: rgba(6, 78, 59, 0.96) !important;
+  border: 1px solid #22c55e !important;
+  color: #f0fdf4 !important;
+}
+
+/* Clickbait / Deceptive Content State (Red) */
+.yt-hover-dashboard.fake {
+  background: rgba(127, 29, 29, 0.96) !important;
+  border: 1px solid #ef4444 !important;
+  color: #fef2f2 !important;
+}
+
+/* Inconclusive Evidence State (Amber) */
+.yt-hover-dashboard.uncertain {
+  background: rgba(120, 53, 15, 0.96) !important;
+  border: 1px solid #f59e0b !important;
+  color: #fffbeb !important;
+}
+
+/* Header & Status Indicator */
+.yt-hover-title {
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  letter-spacing: 0.2px !important;
+  margin-bottom: 4px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.short-format .yt-hover-title {
+  font-size: 11px !important;
+}
+
+/* Strict Two-Line Rationale Display */
+.yt-hover-subtitle {
+  font-size: 11px !important;
+  font-weight: 400 !important;
+  line-height: 1.4 !important;
+  opacity: 0.96 !important;
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  overflow-wrap: anywhere !important;
+}
+
+.short-format .yt-hover-subtitle {
+  font-size: 10px !important;
+  line-height: 1.25 !important;
+}
+
+/* Protective Action Buttons */
+.yt-hover-actions {
+  display: flex !important;
+  gap: 8px !important;
+  margin-top: 8px !important;
+  width: 100% !important;
+}
+
+.yt-btn-skip,
+.yt-btn-watch {
+  flex: 1 !important;
+  min-width: 0 !important;
+  padding: 6px 10px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  border: none !important;
+  transition: transform 0.1s ease, background 0.15s ease !important;
+  text-align: center !important;
+}
+
+.yt-btn-skip {
+  background: #ffffff !important;
+  color: #0f172a !important;
+}
+
+.yt-btn-skip:hover {
+  background: #f1f5f9 !important;
+  transform: translateY(-1px) !important;
+}
+
+.yt-btn-watch {
+  background: rgba(0, 0, 0, 0.45) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+}
+
+.yt-btn-watch:hover {
+  background: rgba(0, 0, 0, 0.65) !important;
+  transform: translateY(-1px) !important;
+}
+
+.yt-btn-skip:focus-visible,
+.yt-btn-watch:focus-visible {
+  outline: 2px solid #ffffff !important;
+  outline-offset: 2px !important;
+}
+
+.yt-btn-skip:active,
+.yt-btn-watch:active {
+  transform: scale(0.97) !important;
+}
